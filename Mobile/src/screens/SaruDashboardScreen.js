@@ -1,5 +1,6 @@
 ﻿// Firebase removed — fully offline SMS mode
-import { useEffect, useState } from "react";
+import { Audio } from "expo-av";
+import { useEffect, useRef, useState } from "react";
 import {
     Alert,
     FlatList,
@@ -40,6 +41,33 @@ export default function SaruDashboardScreen({ route, navigation }) {
     const [filteredMissions, setFilteredMissions] = useState([]);
     const [selectedMission, setSelectedMission] = useState(null);
     const [activeTab, setActiveTab] = useState("REQUESTS"); // REQUESTS | ACTIVE | HISTORY
+
+    const soundObject = useRef(new Audio.Sound()).current;
+
+    // ─── AUDIO ───────────────────────────────────────────────
+    useEffect(() => {
+        async function loadSound() {
+            try {
+                await soundObject.loadAsync(require("../../assets/siren.mp3"));
+            } catch (e) { /* silent fail */ }
+        }
+        loadSound();
+        return () => { soundObject.unloadAsync(); };
+    }, []);
+
+    const playSiren = async () => {
+        try {
+            const status = await soundObject.getStatusAsync();
+            if (status.isLoaded) await soundObject.replayAsync();
+        } catch (e) { }
+    };
+
+    const stopSiren = async () => {
+        try {
+            const status = await soundObject.getStatusAsync();
+            if (status.isLoaded && status.isPlaying) await soundObject.stopAsync();
+        } catch (e) { }
+    };
 
     // ─── PERMISSIONS ────────────────────────────────────────────
     useEffect(() => {
@@ -96,6 +124,7 @@ export default function SaruDashboardScreen({ route, navigation }) {
                         if (prev.some((m) => m.id === parsed.id)) return prev;
                         return [parsed, ...prev];
                     });
+                    playSiren();
                     Alert.alert("🚨 NEW MISSION", `Mission received from Barangay CC for ${parsed.name}`);
                 }
             }
@@ -317,7 +346,10 @@ export default function SaruDashboardScreen({ route, navigation }) {
     const renderMission = ({ item }) => (
         <TouchableOpacity
             style={styles.missionCard}
-            onPress={() => setSelectedMission(item)}
+            onPress={() => {
+                setSelectedMission(item);
+                stopSiren();
+            }}
         >
             <View style={styles.cardHeader}>
                 <Text style={styles.citizenName}>{item.name}</Text>

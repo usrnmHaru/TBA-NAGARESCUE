@@ -1,6 +1,7 @@
 import { Audio } from "expo-av";
 import * as Notifications from "expo-notifications";
 // Firebase removed — fully offline SMS mode
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useRef, useState } from "react";
 import {
   Alert,
@@ -38,6 +39,11 @@ export default function BarangayDashboardScreen({ route, navigation }) {
   const [filteredAlerts, setFilteredAlerts] = useState([]);
   const [selectedAlert, setSelectedAlert] = useState(null);
 
+  // Persisted set of alert IDs the admin has cleared.
+  // Stored in AsyncStorage so cleared alerts don't reappear after poll/restart.
+  const [dismissedIds, setDismissedIds] = useState(new Set());
+  const DISMISSED_KEY = `@dismissed_alerts_${barangay}`;
+
   const [activeTab, setActiveTab] = useState("INCOMING");
   const [filterLevel, setFilterLevel] = useState("ALL");
   const [newAlertIds, setNewAlertIds] = useState(new Set());
@@ -62,6 +68,15 @@ export default function BarangayDashboardScreen({ route, navigation }) {
   });
 
   const soundObject = useRef(new Audio.Sound()).current;
+
+  // --- LOAD DISMISSED IDS FROM STORAGE ---
+  useEffect(() => {
+    AsyncStorage.getItem(DISMISSED_KEY)
+      .then((raw) => {
+        if (raw) setDismissedIds(new Set(JSON.parse(raw)));
+      })
+      .catch(() => {});
+  }, []);
 
   // --- AUDIO ---
   useEffect(() => {
@@ -312,9 +327,12 @@ export default function BarangayDashboardScreen({ route, navigation }) {
 
   // --- MERGE & FILTER (SMS-only: no online alerts) ---
   useEffect(() => {
-    const sorted = [...offlineAlerts].sort((a, b) => b.createdAt - a.createdAt);
+    // Filter out any alerts the admin has permanently cleared
+    const sorted = [...offlineAlerts]
+      .filter((a) => !dismissedIds.has(a.id))
+      .sort((a, b) => b.createdAt - a.createdAt);
     setCombinedAlerts(sorted);
-  }, [offlineAlerts]);
+  }, [offlineAlerts, dismissedIds]);
 
   useEffect(() => {
     let filtered = combinedAlerts.filter((item) => {
@@ -341,32 +359,33 @@ export default function BarangayDashboardScreen({ route, navigation }) {
     setFilteredAlerts(filtered);
   }, [filterLevel, combinedAlerts, activeTab]);
 
-  // ─────────────────────────────────────────────────────────────
-  // BUG #2 FIX: parseSms ID collision
-  //
-  // OLD: id: `sms-${dateSent}`
-  //   → Two citizens sending SOS at the same millisecond share
-  //     an ID, and one alert silently gets dropped by the
-  //     deduplication check.
-  //
-  // NEW: id: `sms-${senderNumber.replace(/\D/g, "").slice(-7)}-${dateSent}`
-  //   → Combines the last 7 digits of the sender's phone number
-  //     with the timestamp. Since each phone has a unique number,
-  //     collisions are now practically impossible even during a
-  //     mass-casualty event where many people send SOS at once.
-  //   → Also guarantees the same SMS polled across multiple
-  //     fetchInboxHistory() cycles always produces the same ID,
-  //     keeping deduplication working correctly.
-  // ─────────────────────────────────────────────────────────────
+  // Deterministic hash of a string — used to build a stable SMS ID from
+  // the message body so that the live listener and inbox poller always
+  // produce the same ID for the same physical SMS, regardless of whether
+  // their timestamp values match (they often don't — different libraries,
+  // different units, live-listener falls back to Date.now(), etc.).
+  const bodyHash = (str) => {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) {
+      h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
+    }
+    return Math.abs(h).toString(36);
+  };
+
   const parseSms = (body, senderNumber, dateSent) => {
     try {
       let content = body.replace(/SOS Alert:/gi, "").trim();
       const parts = content.split("|").map((p) => p.trim());
 
-      // BUG #2 FIX: include last 7 digits of sender number in ID
       const senderSuffix = senderNumber
         ? senderNumber.replace(/\D/g, "").slice(-7)
         : "unknown";
+
+      // ID is derived from sender + body content — NOT timestamp.
+      // Both the live SmsListener and the inbox poller receive the exact
+      // same body string for the same SMS, so this hash is always identical
+      // no matter which path processes it first, eliminating duplicates.
+      const id = `sms-${senderSuffix}-${bodyHash(body)}`;
 
       let extracted = {
         name: "Unknown Citizen",
@@ -376,7 +395,7 @@ export default function BarangayDashboardScreen({ route, navigation }) {
         urgencyReason: "LOCATION",
         timestamp: new Date(dateSent).toLocaleTimeString(),
         date: new Date(dateSent).toLocaleDateString(),
-        id: `sms-${senderSuffix}-${dateSent}`, // ← FIXED
+        id,
         status: "PENDING",
         source: "OFFLINE",
         createdAt: dateSent,
@@ -538,6 +557,41 @@ export default function BarangayDashboardScreen({ route, navigation }) {
     setSelectedAlert(null);
   };
 
+  // --- CLEAR ALL INCOMING ALERTS ---
+  const handleClearIncoming = () => {
+    // Only clears PENDING alerts (INCOMING tab) — active/history are kept.
+    const pendingIds = combinedAlerts
+      .filter((a) => (a.status || "PENDING") === "PENDING")
+      .map((a) => a.id);
+
+    if (pendingIds.length === 0) {
+      Alert.alert("Nothing to Clear", "There are no incoming requests to clear.");
+      return;
+    }
+
+    Alert.alert(
+      "Clear Incoming Requests",
+      `This will permanently hide all ${pendingIds.length} incoming request(s) from the list. They will not reappear even after refresh.\n\nAre you sure?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear All",
+          style: "destructive",
+          onPress: async () => {
+            const updated = new Set([...dismissedIds, ...pendingIds]);
+            setDismissedIds(updated);
+            setNewAlertIds(new Set());
+            try {
+              await AsyncStorage.setItem(DISMISSED_KEY, JSON.stringify([...updated]));
+            } catch (e) {
+              console.warn("[Barangay] Failed to persist dismissed IDs", e);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const renderItem = ({ item }) => (
     <TouchableOpacity
       style={[
@@ -627,6 +681,14 @@ export default function BarangayDashboardScreen({ route, navigation }) {
           >
             <Text style={{ color: "white", fontSize: 18 }}>🔄</Text>
           </TouchableOpacity>
+          {activeTab === "INCOMING" && (
+            <TouchableOpacity
+              onPress={handleClearIncoming}
+              style={styles.clearBtn}
+            >
+              <Text style={styles.clearBtnText}>CLEAR</Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             onPress={() => navigation.navigate("Landing")}
             style={styles.logoutBtn}
@@ -863,6 +925,16 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.3)",
   },
   logoutBtnText: { color: "#FFF", fontSize: 11, fontWeight: "bold" },
+  clearBtn: {
+    backgroundColor: "rgba(255,200,0,0.2)",
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+    marginLeft: 5,
+    borderWidth: 1,
+    borderColor: "rgba(255,200,0,0.5)",
+  },
+  clearBtnText: { color: "#FFD600", fontSize: 11, fontWeight: "bold" },
   tabs: { flexDirection: "row", backgroundColor: "white", elevation: 2 },
   tab: {
     flex: 1,
