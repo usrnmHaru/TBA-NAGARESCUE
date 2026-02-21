@@ -67,7 +67,7 @@ export default function BarangayDashboardScreen({ route, navigation }) {
   useEffect(() => {
     async function loadSound() {
       try {
-        await soundObject.loadAsync(require("../assets/siren.mp3"));
+        await soundObject.loadAsync(require("../../assets/siren.mp3"));
       } catch (error) {
         /* Silent fail */
       }
@@ -136,14 +136,21 @@ export default function BarangayDashboardScreen({ route, navigation }) {
         setOfflineAlerts((prev) => {
           const unique = [...prev];
           let hasNew = false;
+          const addedIds = [];
           foundAlerts.forEach((newMsg) => {
             if (!unique.some((existing) => existing.id === newMsg.id)) {
               unique.push(newMsg);
               hasNew = true;
+              addedIds.push(newMsg.id);
             }
           });
 
           if (hasNew) {
+            setNewAlertIds((prevIds) => {
+              const updated = new Set(prevIds);
+              addedIds.forEach((id) => updated.add(id));
+              return updated;
+            });
             playSiren();
             Notifications.scheduleNotificationAsync({
               content: {
@@ -283,16 +290,19 @@ export default function BarangayDashboardScreen({ route, navigation }) {
           }
         } catch (e) { }
       } else if (message.body.includes("SOS Alert")) {
+        // Use message.timestamp so the ID matches what inbox polling will
+        // generate for the same SMS — prevents duplicates across both paths.
         const parsed = parseSms(
           message.body,
           message.originatingAddress,
-          new Date().getTime()
+          message.timestamp || new Date().getTime()
         );
         if (parsed) {
           setOfflineAlerts((prev) => {
             if (prev.some((a) => a.id === parsed.id)) return prev;
             return [parsed, ...prev];
           });
+          setNewAlertIds((prev) => new Set([...prev, parsed.id]));
           playSiren();
         }
       }
@@ -534,7 +544,18 @@ export default function BarangayDashboardScreen({ route, navigation }) {
         styles.card,
         { borderLeftColor: item.level === "HIGH" ? "#D32F2F" : "#FBC02D" },
       ]}
-      onPress={() => setSelectedAlert(item)}
+      onPress={() => {
+        setSelectedAlert(item);
+        // Mark as seen and stop siren when the triggering card is opened
+        if (newAlertIds.has(item.id)) {
+          setNewAlertIds((prev) => {
+            const updated = new Set(prev);
+            updated.delete(item.id);
+            return updated;
+          });
+          soundObject.stopAsync().catch(() => {});
+        }
+      }}
     >
       <View style={styles.cardHeader}>
         <View style={{ flex: 1, marginRight: 10 }}>
@@ -622,14 +643,21 @@ export default function BarangayDashboardScreen({ route, navigation }) {
             onPress={() => setActiveTab(tab)}
             style={[styles.tab, activeTab === tab && styles.tabActive]}
           >
-            <Text
-              style={[
-                styles.tabText,
-                activeTab === tab && styles.tabTextActive,
-              ]}
-            >
-              {tab}
-            </Text>
+            <View style={{ flexDirection: "row", alignItems: "center" }}>
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === tab && styles.tabTextActive,
+                ]}
+              >
+                {tab}
+              </Text>
+              {tab === "INCOMING" && newAlertIds.size > 0 && (
+                <View style={styles.tabBadge}>
+                  <Text style={styles.tabBadgeText}>{newAlertIds.size}</Text>
+                </View>
+              )}
+            </View>
           </TouchableOpacity>
         ))}
       </View>
@@ -884,6 +912,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   newBadgeText: { color: "white", fontSize: 10, fontWeight: "bold" },
+  tabBadge: {
+    backgroundColor: "#D32F2F",
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    justifyContent: "center",
+    alignItems: "center",
+    marginLeft: 5,
+    paddingHorizontal: 4,
+  },
+  tabBadgeText: { color: "white", fontSize: 10, fontWeight: "bold" },
   modeTag: {
     paddingHorizontal: 6,
     paddingVertical: 2,

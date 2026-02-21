@@ -83,6 +83,9 @@ export default function CitizenHomeScreen({ navigation }) {
   const [tapCount, setTapCount] = useState(0);
   const resetTapTimer = useRef(null);
   const [targetNumber, setTargetNumber] = useState(BARANGAY_HOTLINES.DEFAULT);
+  // Guard against autoSend firing success callback multiple times
+  // (happens when the SOS message is split into multiple SMS parts)
+  const sosCallbackFired = useRef(false);
 
   // helpStatus can be: IDLE, WAITING, RETRY, ON_THE_WAY, RESOLVED
   const [helpStatus, setHelpStatus] = useState("IDLE");
@@ -262,7 +265,14 @@ export default function CitizenHomeScreen({ navigation }) {
         console.log("GPS Fail — using 0,0");
       }
 
-      const msg = `SOS Alert: Name=${user.headName} | Mobile=${user.mobileNumber} | Location=${user.address} | Lat=${coords.latitude.toFixed(6)} | Long=${coords.longitude.toFixed(6)} | Lvl=${urgency}(${urgencyReason}) | ${getHouseholdSummary()} | Type=Flood Rescue`;
+      // Keep this message under 160 chars so Android sends it as a single
+      // SMS segment. Multipart messages fire the autoSend callback once per
+      // part, which caused duplicate alerts on the Barangay dashboard.
+      // Changes vs old format:
+      //   • Separators: " | " → "|" (saves ~32 chars)
+      //   • Coordinates: 6 decimal places → 4 (saves 4 chars, still ~11m accuracy)
+      //   • Removed trailing "| Type=Flood Rescue" (redundant, saves 20 chars)
+      const msg = `SOS Alert:Name=${user.headName}|Mobile=${user.mobileNumber}|Location=${user.address}|Lat=${coords.latitude.toFixed(4)}|Long=${coords.longitude.toFixed(4)}|Lvl=${urgency}(${urgencyReason})|${getHouseholdSummary()}`;
 
       if (Platform.OS === "ios") {
         setLoading(false);
@@ -318,15 +328,26 @@ export default function CitizenHomeScreen({ navigation }) {
         });
       }, 15000);
 
+      // Reset the guard for this new SOS send
+      sosCallbackFired.current = false;
+
       SmsAndroid.autoSend(
         targetNumber,
         msg,
         (fail) => {
+          if (sosCallbackFired.current) return;
+          sosCallbackFired.current = true;
           clearTimeout(smsTimeout);
           setLoading(false);
           Alert.alert("SOS Failed", `Could not send SMS.\n\nError: ${fail}\n\nCall ${targetNumber} directly.`);
         },
         () => {
+          // Guard: autoSend fires once per SMS part (multipart messages).
+          // Without this, a long SOS message split into 2-3 parts would
+          // trigger this callback 2-3 times, sending duplicate alerts to
+          // the Barangay dashboard.
+          if (sosCallbackFired.current) return;
+          sosCallbackFired.current = true;
           clearTimeout(smsTimeout);
           setHelpStatus("WAITING");
           setTimeLeft(30);
@@ -342,7 +363,7 @@ export default function CitizenHomeScreen({ navigation }) {
   };
 
   const handleTripleTap = () => {
-    if (loading || helpStatus === "ON_THE_WAY" || helpStatus === "RESOLVED")
+    if (loading || helpStatus === "WAITING" || helpStatus === "ON_THE_WAY" || helpStatus === "RESOLVED")
       return;
 
     const newCount = tapCount + 1;

@@ -145,6 +145,8 @@ export default function SaruLoginScreen({ navigation }) {
                         <FlatList
                             data={SARU_TEAMS}
                             keyExtractor={(item) => item}
+                            nestedScrollEnabled={true}
+                            style={{ backgroundColor: '#FFF' }}
                             renderItem={({ item }) => (
                                 <TouchableOpacity
                                     style={styles.modalItem}
@@ -174,6 +176,8 @@ export default function SaruLoginScreen({ navigation }) {
                         <FlatList
                             data={BARANGAY_LIST}
                             keyExtractor={(item) => item}
+                            nestedScrollEnabled={true}
+                            style={{ backgroundColor: '#FFF' }}
                             renderItem={({ item }) => (
                                 <TouchableOpacity
                                     style={styles.modalItem}
@@ -244,7 +248,7 @@ const styles = StyleSheet.create({
     modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 20 },
     modalContent: { backgroundColor: '#FFF', borderRadius: 15, padding: 20, maxHeight: '60%' },
     modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15, textAlign: 'center', color: '#333' },
-    modalItem: { paddingVertical: 15, borderBottomWidth: 1, borderColor: '#EEE' },
+    modalItem: { paddingVertical: 15, borderBottomWidth: 1, borderColor: '#EEE', backgroundColor: '#FFF' },
     modalItemText: { fontSize: 16, color: '#333' },
     closeButton: { marginTop: 15, alignItems: 'center', padding: 10 },
     closeText: { color: '#1976D2', fontWeight: 'bold' }
